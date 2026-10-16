@@ -1,6 +1,6 @@
 # Build a Tiny Transformer
 
-通过逐阶段亲手实现，学习 GPT 风格的字符级文本生成器。目前 **Milestone 1 已完成，Milestone 2 为待完成的单头因果注意力练习**，尚未实现完整模型或训练。
+通过逐阶段亲手实现，学习 GPT 风格的字符级文本生成器。目前 **Milestone 1/2 已完成，Milestone 3 为待完成的多头因果注意力练习**，尚未实现完整模型或训练。
 
 默认学习方式是：阅读目标和提示 → 实现核心计算 → 运行测试 → 观察输出 → 解释原理，再进入下一阶段。当前不提供练习的完整参考答案。
 
@@ -47,13 +47,13 @@ uv run python -m transformer.inspect_data --text path/to/file.txt
 
 复盘：为什么目标要错一位？为什么 token ID 使用 `torch.long`？当 `N=10`、`T=4` 时有哪些合法起点？
 
-## Milestone 2：单头因果自注意力（当前练习）
+## Milestone 2：单头因果自注意力（已完成）
 
 这一阶段让每个位置根据当前上下文，选择应该读取哪些位置的信息。暂不训练语言模型，也不实现多头注意力。
 
 ### 输入与接口
 
-在 `src/transformer/attention.py` 中完成 `CausalSelfAttentionHead.forward`。构造函数、三个可学习的无偏置线性层和输入检查已提供。
+`src/transformer/attention.py` 中的 `CausalSelfAttentionHead.forward` 已实现，并通过单头注意力全部测试。下面保留接口和推导，供复习和后续复用。
 
 ```python
 head = CausalSelfAttentionHead(embedding_dim=6, head_dim=3)
@@ -85,7 +85,7 @@ weights = softmax(causal_mask(scores), dim=-1)
 output = weights V
 ```
 
-按下面顺序实现，每一步都先检查形状：
+实现采用下面的计算顺序，可逐步检查形状：
 
 1. 通过已提供的 `query`、`key`、`value` 层生成 Q/K/V。
 2. 计算每个 query 与所有 key 的点积，除以 `sqrt(head_dim)`。思考 head_dim 增大时，点积分数的尺度会如何变化。
@@ -109,51 +109,107 @@ query 3     1 1 1 1
 
 保留对角线：当前位置可以读取自己。比如输入 `h e l l`，第二个位置预测下一个 `l` 时，只能读取 `h e`，不能读取输入中的后续字符。遮罩后的未来分数为负无穷，softmax 后对应权重为零；每行允许位置的权重之和为一。
 
+### 验证与复盘
+
+```bash
+uv run pytest -m milestone2
+uv run python -m transformer.inspect_attention
+```
+
+检查入口打印形状、注意力矩阵、每行权重之和及未来权重是否全为零。Milestone 2 的全部测试已通过，`milestone2` 标记保留用于回归检查，`exercise` 标记已移除。
+
+复盘问题与简答：
+
+1. **Q、K、V 为什么采用不同的投影？为什么输出汇总的是 V？** Q/K 学习匹配关系，V 学习被汇总的内容；不同投影让两种职责可分别学习。
+2. **为什么除以 `√D`，而不是 `√C`？** 在各分量近似独立且方差稳定时，点积方差随 D 增长，缩放可避免 softmax 过度尖锐；点积发生在 D 维，因此使用 D。
+3. **为什么遮罩要在 softmax 之前？把未来分数设成零会怎样？** 先设为负无穷，才能让未来位置权重为零；设成零仍会产生正的指数权重。
+4. **为什么 softmax 沿最后一维，而不是沿 query 维？** 每个 query 都要在所有允许的 key 之间分配读取比例，因此沿最后一维归一化。
+5. **如果移除遮罩，下一字符预测会如何泄露答案？** 训练输入中的后续字符包含当前位置的预测目标，不加遮罩就可能直接读取答案。
+6. **为什么只有一个位置时，输出等于该位置的 V？** 唯一允许位置的权重为 1，因此输出就是自身的 V。
+
+## Milestone 3：多头因果注意力与输出投影（当前练习）
+
+目标：复用你完成的单头模块，让多个头独立计算，再拼接和融合结果。每个头都有独立的 Q/K/V 参数，读取的是同一个完整输入 `x`，而不是把输入特征先分成几份。独立参数提供了学习不同关系的能力，但不保证各头训练后必然形成不同分工；当前演示也没有训练。
+
+### 输入与接口
+
+在 `src/transformer/attention.py` 中完成 `MultiHeadCausalSelfAttention.forward`：
+
+```python
+attention = MultiHeadCausalSelfAttention(embedding_dim=8, num_heads=2)
+output, attention_weights = attention(x)
+```
+
+构造函数和输入检查已提供。`embedding_dim=C`、`num_heads=H` 必须是正整数，并满足 `C % H == 0`，否则抛出 `ValueError`。每头宽度自动取 `D = C // H`，因此 `H × D = C`。
+
+`self.heads` 使用 `nn.ModuleList` 注册 H 个独立的单头模块，使参数能被优化器、保存操作和设备/类型转换识别；`self.projection` 是无偏置的 `C → C` 线性层。输入仍须是 `[B, T, C]` 浮点特征，`T >= 1`，设备与类型匹配模块参数。
+
+| 阶段 | 形状 | 操作目标 |
+| --- | --- | --- |
+| 共享输入 | `[B, T, C]` | 每个头读取同一个完整输入 |
+| 每个头的输出 | `[B, T, D]` | 各自独立执行因果注意力 |
+| 拼接后的特征 | `[B, T, H × D] = [B, T, C]` | 按头顺序保留全部特征 |
+| 最终输出 | `[B, T, C]` | 输出投影混合不同头的特征 |
+| 每个头的权重 | `[B, T, T]` | 每个头自己的匹配关系 |
+| 返回的全部权重 | `[B, H, T, T]` | 新增 head 轴，保留各头信息 |
+
+拼接保留每个头的特征块；求和或平均会把这些块合并，丢失头的对应位置，并把特征宽度保持为 D。输出投影则在拼接后学习如何混合不同头的信息，且保持最终宽度 C。权重只是按头堆叠，不经过输出投影，也不跨头归一化。
+
+### 练习步骤与提示
+
+1. 依次调用 `self.heads` 中的各头，收集每个头返回的输出和权重。不要重新实现单头计算。
+2. 用 `torch.cat` 沿已有的特征维拼接输出，得到 `[B, T, C]`。不要沿序列维拼接，也不要把头求和或平均。
+3. 将拼接结果送入 `self.projection`，得到最终输出。
+4. 用 `torch.stack` 在新的头维上堆叠权重，得到 `[B, H, T, T]`，按 `ModuleList` 顺序返回 `(output, attention_weights)`。
+
+注意 `cat` 合并已有维度，`stack` 新增一个维度。保留计算图，不要在 forward 中使用 `detach` 或 `no_grad`。本阶段不使用封装好的注意力接口，不加入 dropout、嵌入、残差连接或训练循环。
+
 ### 检查顺序与预期结果
 
 ```bash
-# 已完成的数据处理、环境检查，以及新模块的构造和输入检查：应通过
+# Milestone 1/2 回归测试与第三阶段已提供的基础行为：应通过
 uv run pytest -m "not exercise"
 
-# 当前阶段：先通过基础检查，然后在未完成的 forward 处失败
-uv run pytest -m milestone2 -x
+# 当前阶段：基础检查通过后，在未实现的 forward 处失败
+uv run pytest -m milestone3 -x
 
-# 只检查待实现的计算；逐个解决失败
-uv run pytest -m "milestone2 and exercise" -x
+# 只检查待实现的核心计算，逐个解决失败
+uv run pytest -m "milestone3 and exercise" -x
 
-# 观察固定随机种子的四个位置
-uv run python -m transformer.inspect_attention
+# 观察 C=8、H=2、T=4 时每个头的注意力
+uv run python -m transformer.inspect_multihead
 
-# 完成练习后的最终检查
+# 完成练习后检查全部测试与三个入口
 uv run pytest
+uv run python -m transformer.inspect_data
+uv run python -m transformer.inspect_attention
+uv run python -m transformer.inspect_multihead
 uv run ruff check .
 ```
 
-骨架阶段，计算测试会因 `NotImplementedError` 失败，这是明确保留的练习入口；全量 `pytest` 暂时也会失败。不要删除、跳过或改成预期失败来绕过测试。`exercise` 标记只用于未完成练习，`milestone2` 包括本阶段全部测试；Milestone 1 测试已移出练习分类。
+只有 Milestone 3 的核心计算测试保留 `exercise` 标记；骨架阶段这些测试和全量测试会因 `NotImplementedError` 失败。不要删除、跳过或改成预期失败来绕过测试。新检查入口在未完成时以状态码 1 退出并提示编辑位置；完成后打印形状、各头矩阵及行和、未来权重检查。
 
-注意力检查入口在未完成时以状态码 1 退出并提示编辑位置；实现完成后打印输入/输出形状、注意力矩阵、每行权重之和以及未来权重是否全为零。
+如果已有虚拟环境且当前无法联网，可用 `uv run --no-sync ...` 运行检查，避免重新同步依赖。
 
 完成标准：
 
-- 全部测试和 Ruff 检查通过，两个检查入口正常运行。
-- 输出和权重形状正确，权重非负、行和为一、未来权重为零。
-- 手算示例一致，修改未来特征不会影响过去输出，不同 batch 样本互不影响。
-- 同一实例可处理不同序列长度；长度为一时只读取自身的 V。
-- 输入与 Q/K/V 参数均能获得有限梯度。
+- 全部测试、Ruff 和修改文件的格式检查通过，三个检查入口正常。
+- 输出为 `[B, T, C]`，权重为 `[B, H, T, T]`；各头独立满足因果性与概率规则。
+- 固定参数示例验证头的顺序、拼接方向和输出投影；修改未来输入或另一个 batch 样本不影响原有因果边界。
+- `H=1` 且输出投影为单位矩阵时，与原单头结果一致。
+- 长度为一和变化的序列长度正确，输入、各头 Q/K/V 与输出投影均获得有限梯度。
 
-测试中的手算示例使用 `C=3`、`D=2`，帮助区分该除以哪一个维度；先自己计算再对照预期。
+复盘问题（完成后再回答）：
 
-复盘问题：
-
-1. Q、K、V 为什么采用不同的投影？为什么输出汇总的是 V？
-2. 为什么除以 `√D`，而不是 `√C`？
-3. 为什么遮罩要在 softmax 之前？把未来分数设成零会怎样？
-4. 为什么 softmax 沿最后一维，而不是沿 query 维？
-5. 如果移除遮罩，下一字符预测会如何泄露答案？
-6. 为什么只有一个位置时，输出等于该位置的 V？
+1. 为什么各头读取同一个完整输入，而不是各自只读取 C/H 个输入特征？
+2. 为什么拼接输出使用 `cat`，堆叠权重使用 `stack`？各自选择哪个维度？
+3. 如果把各头输出平均，会丢失什么信息？形状如何变化？
+4. 为什么拼接后还需要输出投影？它会跨序列位置混合信息吗？
+5. 为什么增加多个头和输出投影后，仍然不会读取未来信息？
+6. 独立参数是否保证各头学到不同关系？如何观察它们的行为？
 
 ## 后续阶段
 
-完成并复盘 Milestone 2 后，再学习多头注意力与输出投影。之后加入字符/位置嵌入、Transformer 块、连续的训练/验证划分、固定批次过拟合检查，以及带温度的生成和检查点保存。
+完成并复盘 Milestone 3 后，再加入字符/位置嵌入、Transformer 块和残差连接，然后学习连续的训练/验证划分、固定批次过拟合检查，以及带温度的生成和检查点保存。
 
 初始完整模型计划使用 64 维嵌入、4 个注意力头、2 个预归一化 Transformer 块；这些属于后续目标，尚未实现。

@@ -29,6 +29,7 @@ testpaths = ["tests"]
 markers = [
     "exercise: checks for unfinished learning exercises",
     "milestone2: single-head causal self-attention checks",
+    "milestone3: multi-head causal self-attention checks",
 ]
 
 [tool.ruff]

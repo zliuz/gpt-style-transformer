@@ -1,4 +1,4 @@
-"""Milestone 2 contracts; only forward calculation tests are exercises."""
+"""Regression checks for the completed milestone 2 attention head."""
 
 import math
 
@@ -57,12 +57,11 @@ def test_constructor_rejects_non_positive_or_non_integer_dimensions(
         torch.ones(2, 4, 5),
     ],
 )
-def test_forward_rejects_invalid_features_before_exercise(head, x):
+def test_forward_rejects_invalid_features(head, x):
     with pytest.raises(ValueError):
         head(x)
 
 
-@pytest.mark.exercise
 def test_output_shapes_and_attention_probability_rules(head):
     x = torch.randn(2, 4, 6, generator=torch.Generator().manual_seed(5))
     output, weights = head(x)
@@ -78,7 +77,6 @@ def test_output_shapes_and_attention_probability_rules(head):
     assert (weights.diagonal(dim1=-2, dim2=-1) > 0).all()
 
 
-@pytest.mark.exercise
 def test_attention_matches_hand_calculated_scaled_masked_example():
     head = CausalSelfAttentionHead(3, 2).double()
     with torch.no_grad():
@@ -99,7 +97,6 @@ def test_attention_matches_hand_calculated_scaled_masked_example():
     torch.testing.assert_close(output, expected_output)
 
 
-@pytest.mark.exercise
 def test_changing_future_features_cannot_change_past_outputs(head):
     x = torch.randn(2, 5, 6, generator=torch.Generator().manual_seed(8))
     changed = x.clone()
@@ -110,7 +107,6 @@ def test_changing_future_features_cannot_change_past_outputs(head):
     torch.testing.assert_close(weights[:, :3], changed_weights[:, :3])
 
 
-@pytest.mark.exercise
 def test_batch_examples_do_not_influence_each_other(head):
     x = torch.randn(2, 4, 6, generator=torch.Generator().manual_seed(9))
     changed = x.clone()
@@ -121,7 +117,6 @@ def test_batch_examples_do_not_influence_each_other(head):
     torch.testing.assert_close(weights[0], changed_weights[0])
 
 
-@pytest.mark.exercise
 def test_one_position_attends_to_itself_and_returns_its_value(head):
     x = torch.randn(2, 1, 6, generator=torch.Generator().manual_seed(10))
     output, weights = head(x)
@@ -129,7 +124,6 @@ def test_one_position_attends_to_itself_and_returns_its_value(head):
     torch.testing.assert_close(output, head.value(x))
 
 
-@pytest.mark.exercise
 def test_one_head_handles_different_sequence_lengths(head):
     for length in (4, 1, 7, 2):
         output, weights = head(torch.zeros(2, length, 6))
@@ -144,7 +138,6 @@ def test_one_head_handles_different_sequence_lengths(head):
         assert torch.count_nonzero(weights.triu(diagonal=1)) == 0
 
 
-@pytest.mark.exercise
 def test_backward_reaches_input_and_all_projection_parameters(head):
     x = torch.randn(
         2, 4, 6, generator=torch.Generator().manual_seed(11), requires_grad=True
