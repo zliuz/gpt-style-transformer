@@ -1,35 +1,56 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
+## Purpose and Learning Workflow
 
-This workspace currently contains no source code, tests, assets, or package manifests. The `.agents/`, `.codex/`, `.aws/`, and `.git/` directories are reserved for environment metadata; do not use them for application code.
+This is a guided, character-level GPT-style Transformer learning project. Milestone 1 (tokenization and next-character batches) is implemented. Milestone 2 provides a single-head causal self-attention exercise scaffold, tests, and an inspection command; its core forward calculation is intentionally unfinished.
 
-When introducing the initial implementation, keep the layout explicit: use `src/` for source modules, `tests/` for automated tests, and `assets/` only if static resources are needed. Add a `README.md` describing the project's purpose, setup, and entry points. These paths are proposed conventions, not existing directories.
+Default to scaffolds, incremental hints, tests, and conceptual review. Only supply or fill in the exercise's core solution when the user explicitly requests an answer or complete implementation. Preserve intentional `NotImplementedError` exercises when preparing learning material. Do not bypass exercise checks by skipping, deleting, or marking them xfail. After a learner completes a milestone, review the implementation and update its status and test markers before advancing.
 
-## Build, Test, and Development Commands
+## Project Structure
 
-No build, test, or local development commands are configured yet. Do not assume commands such as `npm test`, `pytest`, or `make build` work in this workspace.
+- `src/transformer/`: package source; `data.py` contains completed milestone 1, `attention.py` contains the milestone 2 scaffold, and `inspect_data.py` / `inspect_attention.py` are runnable teaching entry points.
+- `tests/`: pytest checks mirroring source responsibilities.
+- `data/toy.txt`: original tiny teaching corpus, not intended for fluent generation.
+- `README.md`: learner-facing setup, concepts, exercises, validation, and roadmap; keep explanations primarily in Chinese with English code identifiers.
+- `pyproject.toml` and `uv.lock`: tool configuration and locked dependencies.
 
-When adding a toolchain, document exact installation, development, build, and test commands in `README.md`. Commit the appropriate dependency manifest and lockfile, and keep documented commands consistent with the configuration.
+The `.agents/`, `.codex/`, `.aws/`, and `.git/` directories are reserved for environment metadata, not application code. Add `assets/` only when static resources are needed.
 
-## Coding Style & Naming Conventions
+## Setup, Development, and Build Commands
 
-No language, formatter, or linter has been selected. Follow the chosen language's standard conventions and configure formatting and linting when introducing source code. Use consistent indentation within each language and avoid unrelated formatting changes.
+Use Python 3.12, uv, NumPy, CPU-only PyTorch, pytest, and Ruff. Run from the repository root:
 
-Choose descriptive module, function, and variable names. Organize modules by responsibility, keep public interfaces small, and document behavior that is not apparent from the code.
+```bash
+uv sync --locked
+uv run pytest -m "not exercise"
+uv run pytest -m milestone2 -x
+uv run pytest -m "milestone2 and exercise" -x
+uv run pytest
+uv run python -m transformer.inspect_data
+uv run python -m transformer.inspect_attention
+uv run ruff check .
+uv run ruff format .
+uv build
+```
 
-## Testing Guidelines
+Initial dependency setup needs package-index access. No GPU or downloaded dataset is required. `uv build` writes distribution artifacts to `dist/`. Keep dependency changes intentional, update `uv.lock` when dependencies change, and document exact commands in README. Do not introduce dependencies for this attention exercise.
 
-No testing framework or coverage threshold exists yet. Add automated tests with the first executable functionality and document how to run them. Use descriptive test names that identify the behavior and expected result; mirror source module organization under `tests/` where the framework supports it.
+## Coding Style and Teaching Interfaces
 
-Cover normal behavior, boundary cases, and relevant failure paths. Run the applicable tests before submitting changes and report any checks that could not be run.
+Use four-space indentation and the configured Ruff rules (Python 3.12, line length 88). Keep names descriptive and public interfaces small; document shapes and non-obvious behavior.
 
-## Commit & Pull Request Guidelines
+`CausalSelfAttentionHead(embedding_dim, head_dim)` owns three bias-free projections named `query`, `key`, and `value`. Its `forward(x)` accepts floating features `[B, T, embedding_dim]`, with `T >= 1`, and returns `(output, attention_weights)` of shapes `[B, T, head_dim]` and `[B, T, T]`. Validate dimensions and inputs with `ValueError`; use ordinary PyTorch device/dtype matching. The exercise must expose Q/K/V projection, scaled scores, a diagonal-inclusive causal mask, softmax over keys, and value aggregation. Do not replace these steps with a packaged attention operation. No dropout, full model, training loop, or multi-head attention belongs to milestone 2.
 
-Git history is unavailable in this workspace, so no existing commit convention can be inferred. Use short, imperative commit subjects, such as `Add initial project setup`, and keep commits focused.
+## Testing and Validation
 
-Pull requests should explain the change, its purpose, and validation performed. Link related issues when available. Include screenshots for visual changes and document new dependencies, configuration requirements, or breaking changes.
+Use `exercise` only for unfinished core calculations; `milestone2` selects all single-head attention checks, including provided constructor and validation behavior. Completed milestone 1 tests are ordinary regression checks. No coverage threshold is configured.
 
-## Security & Configuration
+At scaffold delivery, non-exercise tests and Ruff must pass. Exercise tests intentionally fail at the core `NotImplementedError`; the attention inspection command must exit with a helpful message. Report these expected failures explicitly, separately from regressions. Once the learner finishes the exercise, the full suite and both inspection commands must pass.
 
-Keep credentials, tokens, and local configuration out of committed files. Document required environment variables using placeholder values, and add ignore rules for generated outputs and local secrets when initializing the project.
+Cover shape/probability invariants, a hand-calculated reference, future-information isolation, batch independence, sequence-length boundaries, and gradient flow. Avoid tests that require a GPU or network. Do not change the completed milestone 1 implementation as part of preparing milestone 2.
+
+## Commits, Pull Requests, and Security
+
+Use focused commits with short imperative subjects. PRs should explain the learning objective, resulting behavior, validation, and any deliberately unfinished exercises. Link related issues when available; document dependency or configuration changes.
+
+Keep credentials, tokens, and local configuration out of committed files. Existing ignore rules cover virtual environments, caches, generated packages, checkpoints, and `.env`; document any future environment variables with placeholders.

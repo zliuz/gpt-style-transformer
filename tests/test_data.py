@@ -3,8 +3,6 @@ import torch
 
 from transformer.data import CharacterTokenizer, make_batch
 
-pytestmark = pytest.mark.exercise
-
 
 def test_vocabulary_is_sorted_and_unique():
     tokenizer = CharacterTokenizer.from_text("cabca\n")
