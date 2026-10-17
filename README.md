@@ -1,6 +1,6 @@
 # Build a Tiny Transformer
 
-通过逐阶段亲手实现，学习 GPT 风格的字符级文本生成器。目前 **Milestone 1/2 已完成，Milestone 3 为待完成的多头因果注意力练习**，尚未实现完整模型或训练。
+通过逐阶段亲手实现，学习 GPT 风格的字符级文本生成器。目前 **Milestone 1–3 已完成，Milestone 4 为待完成的模型前向练习**，模型结构已搭建，核心前向计算待完成，尚未开始训练。
 
 默认学习方式是：阅读目标和提示 → 实现核心计算 → 运行测试 → 观察输出 → 解释原理，再进入下一阶段。当前不提供练习的完整参考答案。
 
@@ -127,13 +127,13 @@ uv run python -m transformer.inspect_attention
 5. **如果移除遮罩，下一字符预测会如何泄露答案？** 训练输入中的后续字符包含当前位置的预测目标，不加遮罩就可能直接读取答案。
 6. **为什么只有一个位置时，输出等于该位置的 V？** 唯一允许位置的权重为 1，因此输出就是自身的 V。
 
-## Milestone 3：多头因果注意力与输出投影（当前练习）
+## Milestone 3：多头因果注意力与输出投影（已完成）
 
 目标：复用你完成的单头模块，让多个头独立计算，再拼接和融合结果。每个头都有独立的 Q/K/V 参数，读取的是同一个完整输入 `x`，而不是把输入特征先分成几份。独立参数提供了学习不同关系的能力，但不保证各头训练后必然形成不同分工；当前演示也没有训练。
 
 ### 输入与接口
 
-在 `src/transformer/attention.py` 中完成 `MultiHeadCausalSelfAttention.forward`：
+`src/transformer/attention.py` 中的 `MultiHeadCausalSelfAttention.forward` 已完成并通过全部测试，下面保留接口与推导：
 
 ```python
 attention = MultiHeadCausalSelfAttention(embedding_dim=8, num_heads=2)
@@ -164,52 +164,135 @@ output, attention_weights = attention(x)
 
 注意 `cat` 合并已有维度，`stack` 新增一个维度。保留计算图，不要在 forward 中使用 `detach` 或 `no_grad`。本阶段不使用封装好的注意力接口，不加入 dropout、嵌入、残差连接或训练循环。
 
+### 验证与复盘
+
+```bash
+uv run pytest -m milestone3
+uv run python -m transformer.inspect_multihead
+```
+
+Milestone 3 已通过全部测试，计算测试已移除 `exercise` 标记，保留 `milestone3` 分类用于回归检查。检查入口打印各头的权重、行和与未来权重检查。
+
+复盘问题与简答：
+
+1. **为什么各头读取同一个完整输入，而不是各自只读取 C/H 个输入特征？** 每个头通过独立投影，从全部 C 维特征中学习自己的 D 维表示；提前切分会限制可用信息。
+2. **为什么拼接输出使用 `cat`，堆叠权重使用 `stack`？各自选择哪个维度？** 输出沿已有特征轴 `cat(dim=-1)`，得到 `[B,T,C]`；权重新增头轴 `stack(dim=1)`，得到 `[B,H,T,T]`。
+3. **如果把各头输出平均，会丢失什么信息？形状如何变化？** 各头的独立特征块被混合，无法再分别融合；输出保持 `[B,T,D]`，而不是拼接后的 `[B,T,C]`。
+4. **为什么拼接后还需要输出投影？它会跨序列位置混合信息吗？** 投影学习融合不同头的特征，但逐位置作用于最后一维，不跨序列位置混合。
+5. **为什么增加多个头和输出投影后，仍然不会读取未来信息？** 每个头都满足因果遮罩，拼接和投影又只处理同一位置，因此不会引入未来信息。
+6. **独立参数是否保证各头学到不同关系？如何观察它们的行为？** 不保证；可比较训练后各头的注意力矩阵并做消融观察，单看随机初始化的差异不能证明学到了分工。
+
+## Milestone 4：从字符 ID 到 logits（当前练习）
+
+目标：把已有数据流程和注意力连接起来，组成一个 GPT 风格模型的前向流程。依次完成三个练习：**字符/位置嵌入 → 预归一化 Transformer 块 → 模型组装**。构造函数、参数注册、输入检查和前馈网络已提供；核心计算留给你实现。暂不加入训练、损失、采样、检查点或 dropout。
+
+### 总体流程与接口
+
+在 `src/transformer/model.py` 中完成三个 `forward`，顺序如下：
+
+| 练习 | 接口 | 输入 → 输出 |
+| --- | --- | --- |
+| 1 | `TokenPositionEmbedding(vocab_size, context_length, embedding_dim)` | 整数 ID `[B,T]` → 浮点特征 `[B,T,C]` |
+| 2 | `TransformerBlock(embedding_dim, num_heads)` | 特征 `[B,T,C]` → 更新后特征 `[B,T,C]` |
+| 3 | `TinyTransformerLM(vocab_size, context_length, embedding_dim=64, num_heads=4, num_layers=2)` | 整数 ID `[B,T]` → 原始预测分数 `[B,T,V]` |
+
+所有维度必须为正整数，且 C 可被头数整除。ID 必须为二维 `torch.long`，满足 `1 <= T <= context_length`、`0 <= id < vocab_size`；不合法时抛出 `ValueError`。输入和模块的设备须匹配，浮点特征类型须匹配参数；保持 PyTorch 的常规使用方式。每次前向的位置编号从 0 开始，不处理生成缓存。
+
+```text
+字符 ID [B,T]
+    ↓ token_embedding + position_embedding
+特征 [B,T,C]
+    ↓ TransformerBlock × num_layers
+    ↓ final_norm
+    ↓ lm_head: C → V
+logits [B,T,V]
+```
+
+`V=vocab_size`，最后一维包含对每种字符的预测分数。每个位置的 logits 用于预测下一个字符，所以与 Milestone 1 中的目标 `y` 对齐。**返回全部位置的原始分数，不在模型中做 softmax 或取 argmax**；下一阶段会直接用这些分数计算交叉熵。
+
+默认结构为 C=64、H=4、2 个独立的预归一化块，位置表大小由 `context_length` 决定。字符嵌入表和输出层权重不共享。为了便于测试，小例子可用 C=8、H=2。
+
+### 练习 1：字符与位置嵌入
+
+`TokenPositionEmbedding` 已提供两张可学习的 `nn.Embedding` 表：`token_embedding` 和 `position_embedding`。
+
+1. 根据 token ID 查字符表，得到 `[B,T,C]`；不要把整数 ID 当作浮点特征送入注意力。
+2. 按实际序列长度 T，在输入设备上创建 `0..T-1` 的位置编号，可使用 `torch.arange`。
+3. 查位置表，得到 `[T,C]`，再与字符特征相加；广播会给 batch 中各序列使用相同的位置编号。
+
+相同字符在不同位置共享字符向量，但加上不同的位置向量。只创建实际 T 个位置，不把最大上下文长度直接当作当前长度。学习的位置表对序列长度有上限，不自动截断超长输入。
+
+### 练习 2：预归一化与两条残差连接
+
+`TransformerBlock` 已提供 `attention_norm`、`attention`、`feed_forward_norm` 和 `feed_forward`。块只返回特征张量；调用注意力时需要解包 `(features, weights)`，不把整个元组用于残差相加。
+
+计算关系如下，按这个顺序完成，并避免原地修改输入：
+
+```text
+u = x + Attention(LayerNorm_attention(x))
+out = u + FeedForward(LayerNorm_ffn(u))
+```
+
+第二条残差使用已经更新的 u。归一化发生在子层之前，因此称为 pre-norm；不要改成对子层与残差相加后的结果归一化。
+
+`LayerNorm(C)` 在每个位置沿 C 维独立归一化，不跨 batch 或时间维。前馈网络已实现为带偏置的 `Linear(C,4C) → GELU → Linear(4C,C)`，它逐位置做非线性特征变换；注意力负责跨位置读取信息。两条残差都保持 `[B,T,C]`，帮助保留原信息并提供直接的梯度路径。
+
+### 练习 3：模型前向组装
+
+`TinyTransformerLM` 已通过 `ModuleList` 注册独立的块，并提供最终 `LayerNorm` 和无偏置 `lm_head`。
+
+1. 使用 `self.embedding` 获取字符和位置特征。
+2. 按顺序调用 `self.blocks`，每次将前一块的输出传给下一块。
+3. 经过 `self.final_norm` 和 `self.lm_head`，直接返回 logits 张量。
+
+保持完整计算图；整数 token ID 不求梯度，但字符/位置表、各块和输出层的参数需要梯度。不要使用现成的整块 Transformer 替代本项目的注意力和组装练习。
+
 ### 检查顺序与预期结果
 
 ```bash
-# Milestone 1/2 回归测试与第三阶段已提供的基础行为：应通过
+# Milestone 1–3 回归及第四阶段已提供的基础行为：应全部通过
 uv run pytest -m "not exercise"
 
-# 当前阶段：基础检查通过后，在未实现的 forward 处失败
-uv run pytest -m milestone3 -x
+# 逐层实现；测试名中的 embedding / block / model 对应三个练习
+uv run pytest tests/test_model.py -m exercise -k test_embedding -x
+uv run pytest tests/test_model.py -m exercise -k test_block -x
+uv run pytest tests/test_model.py -m exercise -k test_model_ -x
 
-# 只检查待实现的核心计算，逐个解决失败
-uv run pytest -m "milestone3 and exercise" -x
+# 第四阶段的全部练习
+uv run pytest -m "milestone4 and exercise" -x
 
-# 观察 C=8、H=2、T=4 时每个头的注意力
-uv run python -m transformer.inspect_multihead
+# 使用实际语料连接数据与模型，默认两层、64 维、4 头
+uv run python -m transformer.inspect_model
 
-# 完成练习后检查全部测试与三个入口
+# 完成后验收全部测试和四个入口
 uv run pytest
 uv run python -m transformer.inspect_data
 uv run python -m transformer.inspect_attention
 uv run python -m transformer.inspect_multihead
+uv run python -m transformer.inspect_model
 uv run ruff check .
 ```
 
-只有 Milestone 3 的核心计算测试保留 `exercise` 标记；骨架阶段这些测试和全量测试会因 `NotImplementedError` 失败。不要删除、跳过或改成预期失败来绕过测试。新检查入口在未完成时以状态码 1 退出并提示编辑位置；完成后打印形状、各头矩阵及行和、未来权重检查。
-
-如果已有虚拟环境且当前无法联网，可用 `uv run --no-sync ...` 运行检查，避免重新同步依赖。
+已安装依赖且无法联网时，可用 `uv run --no-sync ...`。`exercise` 只标记第四阶段待完成的计算；骨架阶段，全量测试中这些用例会因 `NotImplementedError` 失败。不要删除、跳过或改成预期失败来绕过测试。新入口在未完成时退出并给出提示，完成后打印输入/目标、logits 形状及有限值检查。随机初始化的分数不代表模型已学会语言。
 
 完成标准：
 
-- 全部测试、Ruff 和修改文件的格式检查通过，三个检查入口正常。
-- 输出为 `[B, T, C]`，权重为 `[B, H, T, T]`；各头独立满足因果性与概率规则。
-- 固定参数示例验证头的顺序、拼接方向和输出投影；修改未来输入或另一个 batch 样本不影响原有因果边界。
-- `H=1` 且输出投影为单位矩阵时，与原单头结果一致。
-- 长度为一和变化的序列长度正确，输入、各头 Q/K/V 与输出投影均获得有限梯度。
+- 全部测试、Ruff 和修改文件格式检查通过，四个检查入口正常。
+- 嵌入符合指定表的精确加法、批量广播和位置编号，支持 T=1 与最大上下文。
+- 块满足 pre-norm 与两条残差的顺序；子层输出为零时应原样传递输入，且不原地修改输入。
+- 模型按顺序使用所有块，输出全部位置的 logits，保持因果性和 batch 独立性。
+- 输入前缀单独运行与全序列中该前缀的 logits 一致。
+- 嵌入表、注意力、前馈层、归一化和输出层都能获得有限梯度。
 
 复盘问题（完成后再回答）：
 
-1. 为什么各头读取同一个完整输入，而不是各自只读取 C/H 个输入特征？
-2. 为什么拼接输出使用 `cat`，堆叠权重使用 `stack`？各自选择哪个维度？
-3. 如果把各头输出平均，会丢失什么信息？形状如何变化？
-4. 为什么拼接后还需要输出投影？它会跨序列位置混合信息吗？
-5. 为什么增加多个头和输出投影后，仍然不会读取未来信息？
-6. 独立参数是否保证各头学到不同关系？如何观察它们的行为？
+1. 为什么要把 token ID 变成可学习向量，而不是直接用 ID 的大小？
+2. 为什么还要加入位置嵌入？字符与位置向量为什么可以相加？
+3. pre-norm 和 post-norm 的顺序有何区别？第二条残差为什么使用更新后的特征？
+4. 注意力与前馈网络各负责什么？为什么前馈网络需要非线性激活？
+5. 为什么 `LayerNorm(C)` 和前馈层不会泄露未来信息？
+6. 为什么模型返回 `[B,T,V]` logits，而不是概率或仅最后一个位置的结果？
 
 ## 后续阶段
 
-完成并复盘 Milestone 3 后，再加入字符/位置嵌入、Transformer 块和残差连接，然后学习连续的训练/验证划分、固定批次过拟合检查，以及带温度的生成和检查点保存。
-
-初始完整模型计划使用 64 维嵌入、4 个注意力头、2 个预归一化 Transformer 块；这些属于后续目标，尚未实现。
+完成并复盘 Milestone 4 后，再学习训练/验证的连续划分、交叉熵、优化器、固定批次过拟合检查与验证损失；之后加入温度采样、生成和检查点保存。当前仅搭建模型前向练习，尚未训练。

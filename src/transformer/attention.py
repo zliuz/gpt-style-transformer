@@ -1,4 +1,4 @@
-"""Completed single-head attention and a milestone 3 multi-head exercise."""
+"""Completed single-head and multi-head causal self-attention."""
 
 import torch
 from torch import nn
@@ -66,11 +66,7 @@ class CausalSelfAttentionHead(nn.Module):
 
 
 class MultiHeadCausalSelfAttention(nn.Module):
-    """Milestone 3: combine independent heads and mix their features.
-
-    The constructor and input checks are provided. Complete the forward exercise
-    using the existing heads, without packaged attention operations.
-    """
+    """Milestone 3: combine independent heads and mix their features."""
 
     def __init__(self, embedding_dim: int, num_heads: int) -> None:
         super().__init__()
@@ -115,7 +111,7 @@ class MultiHeadCausalSelfAttention(nn.Module):
             output, weights = head(x)
             head_outputs.append(output)
             head_weights.append(weights)
-        
+
         # 2. Concatenate head outputs along the feature axis to get [B, T, C].
         #    Hint: torch.cat joins an existing axis; do not sum or average heads.
         concatenated_output = torch.cat(head_outputs, dim=-1)

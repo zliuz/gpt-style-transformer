@@ -30,6 +30,7 @@ markers = [
     "exercise: checks for unfinished learning exercises",
     "milestone2: single-head causal self-attention checks",
     "milestone3: multi-head causal self-attention checks",
+    "milestone4: embeddings, pre-norm Transformer blocks, and model forward checks",
 ]
 
 [tool.ruff]
