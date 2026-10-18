@@ -1,6 +1,6 @@
 # Build a Tiny Transformer
 
-通过逐阶段亲手实现，学习 GPT 风格的字符级文本生成器。目前 **Milestone 1–3 已完成，Milestone 4 为待完成的模型前向练习**，模型结构已搭建，核心前向计算待完成，尚未开始训练。
+通过逐阶段亲手实现，学习 GPT 风格的字符级文本生成器。目前 **Milestone 1–4 已完成，Milestone 5 为待完成的训练练习**。模型前向已通过验证，接下来学习损失、参数更新和验证评估。
 
 默认学习方式是：阅读目标和提示 → 实现核心计算 → 运行测试 → 观察输出 → 解释原理，再进入下一阶段。当前不提供练习的完整参考答案。
 
@@ -182,13 +182,13 @@ Milestone 3 已通过全部测试，计算测试已移除 `exercise` 标记，�
 5. **为什么增加多个头和输出投影后，仍然不会读取未来信息？** 每个头都满足因果遮罩，拼接和投影又只处理同一位置，因此不会引入未来信息。
 6. **独立参数是否保证各头学到不同关系？如何观察它们的行为？** 不保证；可比较训练后各头的注意力矩阵并做消融观察，单看随机初始化的差异不能证明学到了分工。
 
-## Milestone 4：从字符 ID 到 logits（当前练习）
+## Milestone 4：从字符 ID 到 logits（已完成）
 
-目标：把已有数据流程和注意力连接起来，组成一个 GPT 风格模型的前向流程。依次完成三个练习：**字符/位置嵌入 → 预归一化 Transformer 块 → 模型组装**。构造函数、参数注册、输入检查和前馈网络已提供；核心计算留给你实现。暂不加入训练、损失、采样、检查点或 dropout。
+目标：把已有数据流程和注意力连接起来，组成一个 GPT 风格模型的前向流程。依次完成三个练习：**字符/位置嵌入 → 预归一化 Transformer 块 → 模型组装**。构造函数和三个核心前向计算均已完成。暂不加入训练、损失、采样、检查点或 dropout。
 
 ### 总体流程与接口
 
-在 `src/transformer/model.py` 中完成三个 `forward`，顺序如下：
+`src/transformer/model.py` 中的三个 `forward` 均已完成，接口如下：
 
 | 练习 | 接口 | 输入 → 输出 |
 | --- | --- | --- |
@@ -247,52 +247,129 @@ out = u + FeedForward(LayerNorm_ffn(u))
 
 保持完整计算图；整数 token ID 不求梯度，但字符/位置表、各块和输出层的参数需要梯度。不要使用现成的整块 Transformer 替代本项目的注意力和组装练习。
 
-### 检查顺序与预期结果
+### 验证与复盘
 
 ```bash
-# Milestone 1–3 回归及第四阶段已提供的基础行为：应全部通过
+uv run pytest -m milestone4
+uv run python -m transformer.inspect_model
+```
+
+Milestone 4 已通过全部测试，计算测试已移除 `exercise` 标记，保留 `milestone4` 分类用于回归检查。检查入口使用实际语料，验证 ID 到 logits 的流程；它不会训练模型。
+
+复盘问题与简答：
+
+1. **为什么要把 token ID 变成可学习向量，而不是直接用 ID 的大小？** ID 只是类别编号；可学习向量能通过训练表达字符特征及关系。
+2. **为什么还要加入位置嵌入？字符与位置向量为什么可以相加？** 位置向量显式编码位置；两者维度相同，可以相加形成同时包含字符与位置信息的特征。
+3. **pre-norm 和 post-norm 的顺序有何区别？第二条残差为什么使用更新后的特征？** pre-norm 在子层前归一化，post-norm 在残差相加后归一化；第二条残差基于已融合注意力信息的更新特征。
+4. **注意力与前馈网络各负责什么？为什么前馈网络需要非线性激活？** 注意力跨位置读取信息，前馈网络逐位置变换特征；非线性使前馈层能表达超出单个线性变换的关系。
+5. **为什么 `LayerNorm(C)` 和前馈层不会泄露未来信息？** 它们仅处理当前位置的特征；跨位置交互由已遮罩的注意力控制。
+6. **为什么模型返回 `[B,T,V]` logits，而不是概率或仅最后一个位置的结果？** 每个位置都有下一字符目标；原始 logits 可直接用于数值稳定的交叉熵，不必先转概率。
+
+## Milestone 5：交叉熵、训练步骤与验证损失（当前练习）
+
+目标：让已经能前向计算的模型开始学习，并区分“记住固定批次”和“在未参与训练的片段上表现如何”。依次完成 `src/transformer/training.py` 中的四个函数；输入检查、运行入口和采样/日志流程已提供，核心计算仍留作练习。本阶段不加入生成、检查点、学习率调度或新依赖。
+
+### 接口与实现顺序
+
+| 练习 | 接口 | 返回值 |
+| --- | --- | --- |
+| 1 | `split_tokens(tokens, train_fraction=0.9, *, context_length)` | 训练前段与验证后段，两个一维 token 张量 |
+| 2 | `next_token_loss(logits, targets)` | 保留计算图的标量损失张量 |
+| 3 | `train_step(model, optimizer, x, y)` | 一次更新前的损失，Python `float` |
+| 4 | `evaluate_loss(model, batches)` | 所有验证 token 的平均损失，Python `float` |
+
+#### 练习 1：连续划分，防止窗口越界
+
+输入为一维 CPU `torch.long`，比例须有限且严格位于 `(0,1)`，上下文长度为正整数。分界位置为 `int(N * train_fraction)`；两段都至少需要 `T+1` 个 token，才能构造输入及其下一字符目标。
+
+沿分界切成两个不重叠的连续片段，保持顺序且不修改原数据。先切分再分别调用已有 `make_batch`，不要先生成窗口再随机划分，否则重叠窗口可能共享训练/验证字符。默认分为前 90% 和后 10%；默认语料有 509 个字符，因此两段为 458 和 51 个 token。
+
+字符表由完整语料确定，以保持统一 ID；这只确定字符集合，验证片段不参与训练窗口采样或参数更新。它是当前封闭语料的教学约定；实际部署还要考虑未见字符。
+
+#### 练习 2：计算所有位置的平均交叉熵
+
+接收非空浮点 `logits [B,T,V]` 与同设备、匹配形状的 `targets [B,T]`（`torch.long`，ID 在 `[0,V)`），不满足时抛出 `ValueError`。
+
+把 B 与 T 合并为样本轴，保留 V 为类别轴，调用 `torch.nn.functional.cross_entropy` 的平均归约。可使用 `reshape` 兼容非连续张量。**直接传 logits，不提前 softmax；`make_batch` 已完成目标错位，这里不要再错位或只保留最后一个位置。**
+
+返回损失张量以支持 `backward`，不要提前 `.item()`。若所有类别分数相等，平均损失应为 `log(V)`（自然对数）；目标类别概率越高，对应负对数损失越低。
+
+#### 练习 3：恰好执行一次参数更新
+
+`x/y` 为非空、同形状的二维 CPU `torch.long`；模型和损失函数继续负责上下文及 ID 范围检查。使用调用者传入的优化器：
+
+1. 设置训练模式，清理旧梯度（如 `zero_grad(set_to_none=True)`）。
+2. 前向计算 logits，再计算下一字符损失。
+3. 对损失反向传播，然后让优化器更新参数。
+4. 返回本次更新前的损失 `float`，不再额外前向一次。
+
+PyTorch 默认累加梯度；不清理旧梯度就不再是独立的一步训练。`train()` 控制模块行为，不会自动开启反向传播或执行参数更新；这些步骤需要分别完成。当前模型没有 dropout，仍应建立正确的模式使用习惯。
+
+#### 练习 4：评估与状态恢复
+
+`batches` 是非空列表，每项为满足上一练习形状要求的 `(x,y)`。批量大小和序列长度可以不同。
+
+记住调用前的 `model.training`，进入评估模式，并在 `torch.no_grad()` 中逐批计算。用“各批平均损失 × 该批 token 数”累加，再除以总 token 数；直接平均各批均值会让小批次获得过大权重。
+
+用 `try/finally` 恢复原来的模式，确保前向或损失抛出异常时同样恢复。不要更新参数，不要调用 `backward`，也不要清空或改动已有 `.grad`。`eval()` 本身不会关闭梯度计算，因此还需要无梯度环境。
+
+### 已提供的运行入口
+
+```bash
+# 先逐个完成四个练习
+uv run pytest -m "milestone5 and exercise" -x
+
+# 固定训练批次：先确认完整训练链路能记住少量数据
+uv run python -m transformer.train --mode overfit
+
+# 在训练段随机采样，观察固定训练/验证批次上的损失
+uv run python -m transformer.train
+
+# 调整时长或数据
+uv run python -m transformer.train --steps 20 --batch-size 4 --context-length 16
+uv run python -m transformer.train --text path/to/file.txt --learning-rate 0.003 --seed 42
+uv run python -m transformer.train --help
+```
+
+默认参数：CPU；模型 64 维、4 头、2 层；批次大小 4、上下文长度 16；种子 42；训练 200 步；AdamW 学习率 0.003、`weight_decay=0`。`--steps`、`--batch-size`、`--context-length` 须为正整数，学习率须有限且为正；种子允许 `0..2**63-1`。
+
+普通训练在第 0 步、每 50 步和最后一步报告固定训练/验证批次上的损失。两组评估数据各预先采样 5 批，使用独立的随机数生成器，评估不会改变训练采样序列。它们只是固定抽样窗口上的诊断，不是遍历整个语料的精确评估；训练曲线不要求每步单调下降。
+
+`overfit` 模式只从训练段采样一次，重复更新这一个批次，报告前后损失；损失下降证明链路能学习这批数据，不证明泛化。它也遵守 90%/10% 划分的最小长度要求。训练入口只打印结果，不保存模型或其他文件。
+
+### 验收与预期失败
+
+```bash
+# Milestone 1–4 回归和当前阶段提供的基础检查：应通过
 uv run pytest -m "not exercise"
 
-# 逐层实现；测试名中的 embedding / block / model 对应三个练习
-uv run pytest tests/test_model.py -m exercise -k test_embedding -x
-uv run pytest tests/test_model.py -m exercise -k test_block -x
-uv run pytest tests/test_model.py -m exercise -k test_model_ -x
+# 只运行第五阶段
+uv run pytest -m milestone5 -x
 
-# 第四阶段的全部练习
-uv run pytest -m "milestone4 and exercise" -x
+# 逐练习运行：split / loss / train_step / evaluation 对应四个核心函数
+uv run pytest tests/test_training.py -m exercise -k split -x
+uv run pytest tests/test_training.py -m exercise -k "test_loss or test_uniform_logits" -x
+uv run pytest tests/test_training.py -m exercise -k train_step -x
+uv run pytest tests/test_training.py -m exercise -k evaluation -x
 
-# 使用实际语料连接数据与模型，默认两层、64 维、4 头
-uv run python -m transformer.inspect_model
-
-# 完成后验收全部测试和四个入口
+# 练习全部完成后的回归与风格检查
 uv run pytest
-uv run python -m transformer.inspect_data
-uv run python -m transformer.inspect_attention
-uv run python -m transformer.inspect_multihead
-uv run python -m transformer.inspect_model
 uv run ruff check .
 ```
 
-已安装依赖且无法联网时，可用 `uv run --no-sync ...`。`exercise` 只标记第四阶段待完成的计算；骨架阶段，全量测试中这些用例会因 `NotImplementedError` 失败。不要删除、跳过或改成预期失败来绕过测试。新入口在未完成时退出并给出提示，完成后打印输入/目标、logits 形状及有限值检查。随机初始化的分数不代表模型已学会语言。
+骨架阶段，全量测试中的第五阶段计算用例会因 `NotImplementedError` 失败，训练入口也会友好提示尚未完成。不要删除、跳过或改成预期失败绕过测试。只有未完成计算带 `exercise`；Milestone 1–4 的测试都属于普通回归。已有四个 `inspect_*` 入口应继续正常。已有虚拟环境且无法联网时可使用 `uv run --no-sync ...`。
 
-完成标准：
-
-- 全部测试、Ruff 和修改文件格式检查通过，四个检查入口正常。
-- 嵌入符合指定表的精确加法、批量广播和位置编号，支持 T=1 与最大上下文。
-- 块满足 pre-norm 与两条残差的顺序；子层输出为零时应原样传递输入，且不原地修改输入。
-- 模型按顺序使用所有块，输出全部位置的 logits，保持因果性和 batch 独立性。
-- 输入前缀单独运行与全序列中该前缀的 logits 一致。
-- 嵌入表、注意力、前馈层、归一化和输出层都能获得有限梯度。
+完成标准：全量测试、Ruff 和修改文件格式检查通过；原有四个检查入口正常；两种训练模式可运行，训练和验证损失有限，固定批次短训练后损失明显下降。小语料的验证损失可能波动甚至上升，这需要结合训练损失判断，而不是以“验证每次都下降”作为正确性条件。
 
 复盘问题（完成后再回答）：
 
-1. 为什么要把 token ID 变成可学习向量，而不是直接用 ID 的大小？
-2. 为什么还要加入位置嵌入？字符与位置向量为什么可以相加？
-3. pre-norm 和 post-norm 的顺序有何区别？第二条残差为什么使用更新后的特征？
-4. 注意力与前馈网络各负责什么？为什么前馈网络需要非线性激活？
-5. 为什么 `LayerNorm(C)` 和前馈层不会泄露未来信息？
-6. 为什么模型返回 `[B,T,V]` logits，而不是概率或仅最后一个位置的结果？
+1. 为什么要先划分连续语料，再从各分区构造窗口？
+2. 为什么交叉熵直接接收 logits？这里为什么不能再次错位目标？
+3. `zero_grad`、`backward` 和 `step` 分别做什么？不清理梯度会怎样？
+4. 为什么评估需要同时使用 `eval()` 和 `no_grad()`，还要恢复原模式？
+5. 为什么评估要按 token 数加权，而不是直接平均各批损失？
+6. 固定批次损失下降能证明什么？训练损失下降、验证损失上升意味着什么？
 
 ## 后续阶段
 
-完成并复盘 Milestone 4 后，再学习训练/验证的连续划分、交叉熵、优化器、固定批次过拟合检查与验证损失；之后加入温度采样、生成和检查点保存。当前仅搭建模型前向练习，尚未训练。
+完成并复盘 Milestone 5 后，再学习温度采样、自回归生成、上下文裁剪及检查点保存/加载。当前阶段先确认训练与评估链路正确，不追求小语料上的流畅生成。
